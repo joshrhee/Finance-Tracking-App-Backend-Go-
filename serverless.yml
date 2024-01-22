@@ -1,0 +1,158 @@
+service: plaid-go-lambda
+frameworkVersion: ">=1.28.0"
+
+custom:
+    FirehoseDeliveryStreamName: plaid-go-lambda-firehose-delivery-stream
+    S3BucketName: plaid-go-lambda-s3-bucket
+    S3Prefix: plaid-go-lambda-s3-prefix
+    serverless-offline:
+        noPrependStageInUrl: true
+
+provider:
+    name: aws
+    runtime: go1.x
+    region: us-east-1
+    stage: dev # 배포할거면 dev, local에서 테스트할거면 local
+    iamRoleStatements:
+        - Effect: Allow
+          Action:
+              - firehose:PutRecord
+              - firehose:PutRecordBatch
+          Resource:
+              - !Sub "arn:aws:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/${self:custom.FirehoseDeliveryStreamName}"
+        - Effect: Allow
+          Action:
+              - s3:ListBucket
+              - s3:GetObject
+          Resource:
+              - !Sub "arn:aws:s3:::plaid-go-lambda-s3-bucket/*"
+              - !Sub "arn:aws:s3:::plaid-go-lambda-s3-bucket"
+
+functions:
+    api:
+        # Type: AWS::Serverless::Api
+        # Properties:
+        #     Cors:
+        #         AllowOrigin: "'*'"
+        #         AllowMethods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+        #         AllowHeaders: "'X-Amz-Date,X-Api-Key,X-Amz-Security-Token,X-Requested-With,X-Auth-Token,Referer,User-Agent,Origin,Content-Type,Authorization,Accept,Access-Control-Allow-Methods,Access-Control-Allow-Origin,Access-Control-Allow-Headers'"
+        handler: bin/main # 배포할때는 bin/main, local에서는 main.go
+        events:
+            - httpApi:
+                  path: /
+                  method: get
+            - httpApi:
+                  path: /create_link_token
+                  method: post
+            - httpApi:
+                  path: /get_access_token
+                  method: post
+        # environment:
+        #     PLATY_ID_TOKEN_TABLE: !Ref PlaidIdTokenTable
+
+    # sendToQueue:
+    #     handler: bin/sendToQueue
+    #     environment:
+    #         QUEUE_URL: !GetAtt Plaid-SQS.Arn
+    #     events:
+    #         - httpApi:
+    #               path: /send-to-queue
+    #               method: post
+
+package:
+    patterns:
+        - "!*/**" # ! menas excluding. exclude everyting and push bin/main file to aws
+        - bin/main
+
+plugins:
+    - serverless-offline
+
+resources:
+    Resources:
+        FirehoseDeliveryStream:
+            Type: AWS::KinesisFirehose::DeliveryStream
+            Properties:
+                DeliveryStreamName: ${self:custom.FirehoseDeliveryStreamName}
+                ExtendedS3DestinationConfiguration:
+                    BucketARN:
+                        !Join ["", ["arn:aws:s3:::", !Ref TransactionsBucket]]
+                    Prefix: ${self:custom.S3Prefix}
+                    BufferingHints:
+                        IntervalInSeconds: 60
+                        SizeInMBs: 5
+                    CompressionFormat: UNCOMPRESSED
+                    RoleARN: !GetAtt FirehoseDeliveryRole.Arn
+                    CloudWatchLoggingOptions:
+                        Enabled: true
+                        LogGroupName: !Ref FirehoseLogGroup
+                        LogStreamName: !Ref FirehoseLogStream
+        FirehoseDeliveryRole:
+            Type: AWS::IAM::Role
+            Properties:
+                RoleName: FirehoseDeliveryRole
+                AssumeRolePolicyDocument:
+                    Version: "2012-10-17"
+                    Statement:
+                        - Effect: Allow
+                          Principal:
+                              Service: firehose.amazonaws.com
+                          Action: sts:AssumeRole
+                Policies:
+                    - PolicyName: FirehoseS3AccessPolicy
+                      PolicyDocument:
+                          Version: "2012-10-17"
+                          Statement:
+                              - Effect: Allow
+                                Action:
+                                    - s3:AbortMultipartUpload
+                                    - s3:GetBucketLocation
+                                    - s3:GetObject
+                                    - s3:ListBucket
+                                    - s3:ListBucketMultipartUploads
+                                    - s3:PutObject
+                                Resource:
+                                    - !Join [
+                                          "",
+                                          [
+                                              "arn:aws:s3:::",
+                                              !Ref TransactionsBucket,
+                                              "/*",
+                                          ],
+                                      ]
+                                    - !Join [
+                                          "",
+                                          [
+                                              "arn:aws:s3:::",
+                                              !Ref TransactionsBucket,
+                                          ],
+                                      ]
+        TransactionsBucket:
+            Type: AWS::S3::Bucket
+            Properties:
+                BucketName: ${self:custom.S3BucketName}
+        FirehoseLogGroup:
+            Type: AWS::Logs::LogGroup
+            Properties:
+                LogGroupName: /aws/kinesisfirehose/${self:custom.FirehoseDeliveryStreamName}
+        FirehoseLogStream:
+            Type: AWS::Logs::LogStream
+            Properties:
+                LogGroupName: !Ref FirehoseLogGroup
+                LogStreamName: s3Backup
+#         Plaid-SQS:
+#             Type: AWS::SQS::Queue
+#             Properties:
+#                 QueueName: Plaid-SQS
+#         PlaidIdTokenTable:
+#             Type: AWS::DynamoDB::Table
+#             Properties:
+#                 TableName: PlaidIdTokenTable
+#                 AttributeDefinitions:
+#                     - AttributeName: id
+#                       AttributeType: S
+#                 KeySchema:
+#                     - AttributeName: id
+#                       KeyType: HASH
+#                 ProvisionedThroughput:
+#                     ReadCapacityUnits: 5
+#                     WriteCapacityUnits: 5
