@@ -5,7 +5,7 @@
 `make build`
 
 # Serverless deploy
-`sls deploy` or `sls deploy function -f <Lambda function name>`
+`sls deploy` or `sls deploy function -f <Lambda function name>` for specific Lambda function or
 `sls deploy -s <stage>` for specific stage
 
 # Serverless build and deploy for dev version with Makefile
